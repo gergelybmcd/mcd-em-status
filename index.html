@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="EM Runner">
+<meta name="theme-color" content="#F4F4F4">
+<meta name="referrer" content="no-referrer">
+<title>EM Job Runner</title>
+<!-- MCD HU RF - EM Job Runner phone view (v1, 2026-11-22). Static page: it downloads the ENCRYPTED status from a
+     secret GitHub Gist and decrypts it here with AES-256-GCM (WebCrypto). The key comes once from the pairing QR
+     (#k=...&g=...), is kept in this phone's localStorage and is never sent anywhere. -->
+<style>
+:root{--red:#E30613;--black:#1D1D1B;--grey:#454545;--head:#F4F4F4;--card:#F4F4F4;--border:#D9D9D9;--muted:#6E6E6E;--ok:#2E8B57}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;color:var(--black);background:#fff}
+header{background:var(--head);padding:calc(env(safe-area-inset-top) + 12px) 16px 10px;border-bottom:4px solid var(--red);display:flex;align-items:center;gap:12px}
+header .logo{width:40px;height:40px;border-radius:50%;background:var(--black);position:relative;flex:none}
+header .logo:after{content:"";position:absolute;left:9px;top:9px;width:18px;height:18px;border:3px solid var(--red);border-radius:50%;border-right-color:transparent}
+header h1{font-size:19px;margin:0}
+header .sub{font-size:12px;color:var(--grey)}
+#pill{margin-left:auto;text-align:right;font-size:12px}
+#pill b{display:block;font-size:13px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--muted);margin-right:5px;vertical-align:-1px}
+main{padding:12px 14px calc(env(safe-area-inset-bottom) + 20px)}
+.sec{color:var(--red);font-size:12px;font-weight:700;letter-spacing:.04em;margin:16px 0 6px;display:flex;align-items:center;gap:8px}
+.sec:after{content:"";flex:1;height:1px;background:var(--border)}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.tile{background:var(--card);border:1px solid var(--border);border-left:5px solid var(--border);padding:10px;min-height:92px}
+.tile h3{margin:0;font-size:17px}.tile .s{font-size:11px;color:var(--muted)}
+.tile .st{margin-top:6px;font-weight:700;font-size:13px;color:#9a9a9a}
+.tile .j{font-size:11px;word-break:break-all;margin-top:2px}
+.tile.run{background:var(--black);color:#fff;border-color:var(--black);border-left-color:var(--red)}
+.tile.run .s,.tile.run .st{color:#fff}
+.card{background:var(--card);border:1px solid var(--border);padding:9px 11px;margin-bottom:6px;font-size:13px}
+.card .t{font-weight:700}.card .m{color:var(--muted);font-size:12px}
+.eta{font-weight:700;margin-top:3px}.late{color:var(--red)}.okc{color:var(--ok)}
+.q{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.55}
+.q div{display:flex;justify-content:space-between;gap:8px}.q span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;background:#FAFAFA;border:1px solid var(--border);padding:8px;white-space:pre-wrap;word-break:break-all;line-height:1.45}
+.log .ok{color:var(--ok)}.log .err{color:var(--red)}.log .ts{color:var(--muted)}
+#banner{display:none;margin:10px 0 0;padding:9px 11px;border-left:4px solid var(--red);background:#fff3f3;font-size:13px}
+#setup{display:none}
+#foot{font-size:11px;color:var(--muted);margin-top:16px}
+button{font:inherit;border:1px solid var(--border);background:#fff;padding:6px 10px;border-radius:4px}
+</style></head>
+<body>
+<header><div class="logo"></div><div><h1>EM Job Runner</h1><div class="sub">MCD Elektronik · HU RF</div></div>
+<div id="pill"><b><span class="dot" id="pdot"></span><span id="ptxt">…</span></b><span id="age"></span></div></header>
+<main>
+<div id="banner"></div>
+<div id="setup" class="card"><div class="t">Not paired</div>
+<div class="m">Open the pairing QR code on the PC (EMRunner\phone\phone_pairing.html) and scan it with the camera.</div></div>
+<div id="view">
+<div class="sec">SOLVERS</div><div class="tiles"><div class="tile" id="tFEM"><h3>FEM</h3><div class="s">EMerge</div><div class="st">not running</div><div class="j"></div></div>
+<div class="tile" id="tFDTD"><h3>FDTD</h3><div class="s">openEMS</div><div class="st">not running</div><div class="j"></div></div></div>
+<div class="sec">SUB-PROJECTS</div><div id="plans"></div>
+<div class="sec">QUEUE</div><div class="card q" id="queue"></div>
+<div class="m" id="last" style="font-size:12px;color:var(--muted)"></div>
+<div class="sec">RUNNER LOG</div><div class="log" id="log"></div>
+</div>
+<div id="foot"><span id="src"></span> · <button id="reload">Refresh</button> <button id="forget">Forget key</button></div>
+</main>
+<script>
+"use strict";
+const POLL_S = 90;                 // unauthenticated GitHub API: 60 requests/h per IP -> 40/h
+const STALE_S = 300;               // no new data for 5 min -> PC offline/asleep note
+const AAD = new TextEncoder().encode("mcd-em-status-v1");
+const $ = id => document.getElementById(id);
+const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const b64u = s => b64(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+const pad = n => String(n).padStart(2, "0");
+function clock(t){const d=new Date(t*1000),n=new Date();const hm=pad(d.getHours())+":"+pad(d.getMinutes());
+  return d.toDateString()===n.toDateString()?hm:["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]+" "+hm}
+function hms(s){s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;
+  return h?`${h}:${pad(m)}:${pad(x)}`:`${m}:${pad(x)}`}
+function esc(s){return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+
+// key + gist id: from the pairing link fragment once, then localStorage
+(function(){const h=new URLSearchParams(location.hash.slice(1));
+  // the #k=...&g=... part stays in the address on purpose: "Add to Home Screen" on iOS saves the current address and a
+  // home-screen web app has its own storage, so the icon must carry the key. The # part is never sent to any server.
+  try{ if(h.get("k")){localStorage.setItem("emk",h.get("k"));if(h.get("g"))localStorage.setItem("emg",h.get("g"));} }catch(e){} })();
+function getK(){try{return [localStorage.getItem("emk"),localStorage.getItem("emg")]}catch(e){return [null,null]}}
+
+async function decrypt(blob,kstr){
+  const key=await crypto.subtle.importKey("raw",b64u(kstr),"AES-GCM",false,["decrypt"]);
+  const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:b64(blob.n),additionalData:AAD,tagLength:128},key,b64(blob.c));
+  const ds=new Blob([pt]).stream().pipeThrough(new DecompressionStream("deflate"));
+  return JSON.parse(await new Response(ds).text());
+}
+async function fetchBlob(gid){
+  const r=await fetch(`https://api.github.com/gists/${gid}`,{cache:"no-store",headers:{"Accept":"application/vnd.github+json"}});
+  if(!r.ok) throw new Error("GitHub "+r.status);
+  const g=await r.json(); const f=g.files&&g.files["status.enc"]; if(!f) throw new Error("no status.enc in gist");
+  let txt=f.content; if(f.truncated){txt=await (await fetch(f.raw_url,{cache:"no-store"})).text();}
+  return JSON.parse(txt);
+}
+let DATA=null, LASTERR="";
+function render(){
+  const now=Date.now()/1000, d=DATA;
+  if(!d){ if(LASTERR){const b=$("banner");b.style.display="block";b.innerHTML="<b>No data</b> – "+esc(LASTERR);
+          $("ptxt").textContent="no data";} return }
+  const age=now-d.made, stale=age>STALE_S, R=d.runner||{};
+  const alive=R.alive && !stale;
+  $("pdot").style.background = stale ? "#9a9a9a" : (R.alive ? "var(--ok)" : "var(--red)");
+  $("ptxt").textContent = stale ? "PC not reporting" : (R.alive ? "Runner running" : "Runner not running");
+  $("age").textContent = "data from "+clock(d.made)+" ("+hms(age)+" ago)";
+  const b=$("banner");
+  if(stale){b.style.display="block";b.innerHTML="<b>PC offline or asleep</b> – showing the last state from "+clock(d.made)+
+     ". The solvers keep running on the PC; this view updates again when it is back online."+(LASTERR?"<br><span class='m'>"+esc(LASTERR)+"</span>":"");}
+  else if(LASTERR){b.style.display="block";b.innerHTML="Could not refresh: "+esc(LASTERR)+" (showing "+clock(d.made)+")";}
+  else b.style.display="none";
+  for(const key of ["FEM","FDTD"]){
+    const t=$("t"+key), runs=Object.entries(d.lanes||{}).filter(([l,r])=>r&&r.solver===key);
+    t.classList.toggle("run",runs.length>0);
+    t.querySelector(".st").textContent=runs.length?"● RUNNING":"not running";
+    t.querySelector(".j").innerHTML=runs.map(([l,r])=>esc(r.job)+"<br>"+l+" lane · "+hms(now-r.started)+
+      (r.over?" · over estimate":r.eta?" · ~"+clock(r.eta):"")).join("<br>");
+  }
+  $("plans").innerHTML=(d.plans||[]).length?(d.plans).map(p=>{
+    let eta = p.open===0 ? `<span class="okc">batch finished ${p.finished?clock(p.finished):""}</span>` :
+       (p.eta ? `batch finish ~${clock(p.eta)} (in ${hms(p.eta-now)})` : "batch finish: no estimate yet");
+    let chk="";
+    if(p.next_check){const late=now-p.next_check;
+      chk = late>600?`<div class="late">next Claude check ${clock(p.next_check)} – overdue by ${hms(late)}</div>`:
+            late>0?`<div class="late">next Claude check ${clock(p.next_check)} – due now</div>`:
+            `<div>next Claude check ${clock(p.next_check)} (in ${hms(-late)})</div>`;}
+    return `<div class="card"><div class="t">${esc(p.title)} <span class="m">· ${p.done} / ${p.total} done</span></div>
+      ${p.project?`<div class="m">${esc(p.project)}</div>`:""}<div class="eta">${eta}</div>
+      ${p.running&&p.running.length?`<div class="m">running ${esc(p.running[0])}</div>`:""}${chk}
+      ${p.check_note?`<div class="m">${esc(p.check_note)}</div>`:""}</div>`}).join("")
+    :`<div class="m" style="font-size:12px;color:var(--muted)">No active sub-project plan</div>`;
+  const rows=[];
+  for(const [lane,q] of Object.entries(d.queue||{})) for(const j of q)
+    rows.push(`<div><span>${lane==="light"?"light ":""}${esc(j.name)}${j.skip?" (skip)":""}</span><span>${j.eta?"~"+clock(j.eta):""}</span></div>`);
+  $("queue").innerHTML=rows.length?rows.join(""):`<span class="m">Queue empty</span>`;
+  const L=d.last; $("last").textContent=L?`Last finished: ${L.name} [${L.solver}] rc=${L.rc} · ${hms(L.seconds)} · ${L.finished}`:"";
+  $("log").innerHTML=(d.log||[]).slice().reverse().map(l=>{const k=l.indexOf("]")+1;
+    const cls=/ERROR|rc=[1-9]/.test(l)?"err":/FINISHED/.test(l)?"ok":"";
+    return `<span class="ts">${esc(l.slice(0,k))}</span><span class="${cls}">${esc(l.slice(k))}</span>`}).join("\n");
+}
+async function poll(){
+  const [k,g]=getK();
+  if(!k||!g){$("setup").style.display="block";$("view").style.display="none";return}
+  $("src").textContent="gist "+g.slice(0,6)+"…, encrypted";
+  try{ DATA=await decrypt(await fetchBlob(g),k); LASTERR="";
+       try{localStorage.setItem("emlast",JSON.stringify(DATA))}catch(e){} }
+  catch(e){ LASTERR = (e&&e.name==="OperationError")?"wrong key (re-scan the pairing QR)":String(e.message||e);
+            if(!DATA){try{DATA=JSON.parse(localStorage.getItem("emlast"))}catch(x){}} }
+  render();
+}
+$("reload").onclick=poll;
+$("forget").onclick=()=>{try{localStorage.removeItem("emk");localStorage.removeItem("emg");localStorage.removeItem("emlast")}catch(e){};location.reload()};
+poll(); setInterval(poll,POLL_S*1000); setInterval(render,15000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)poll()});
+</script>
+</body></html>
