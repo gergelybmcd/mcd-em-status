@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#F4F4F4">
 <meta name="referrer" content="no-referrer">
 <title>EM Job Runner</title>
-<!-- MCD HU RF - EM Job Runner phone view (v1, 2026-11-22). Static page: it downloads the ENCRYPTED status from a
+<!-- MCD HU RF - EM Job Runner phone view (v2, 2026-11-24: second tile row for the solver PC hp-solver + its jobs in the queue; v1 2026-11-22). Static page: it downloads the ENCRYPTED status from a
      secret GitHub Gist and decrypts it here with AES-256-GCM (WebCrypto). The key comes once from the pairing QR
      (#k=...&g=...), is kept in this phone's localStorage and is never sent anywhere. -->
 <style>
@@ -32,6 +32,8 @@ main{padding:12px 14px calc(env(safe-area-inset-bottom) + 20px)}
 .tile .j{font-size:11px;word-break:break-all;margin-top:2px}
 .tile.run{background:var(--black);color:#fff;border-color:var(--black);border-left-color:var(--red)}
 .tile.run .s,.tile.run .st{color:#fff}
+.rowlab{font-size:12px;font-weight:700;margin:8px 0 4px;display:flex;align-items:center;gap:6px}
+.rowlab .m{font-weight:400;color:var(--muted)}
 .card{background:var(--card);border:1px solid var(--border);padding:9px 11px;margin-bottom:6px;font-size:13px}
 .card .t{font-weight:700}.card .m{color:var(--muted);font-size:12px}
 .eta{font-weight:700;margin-top:3px}.late{color:var(--red)}.okc{color:var(--ok)}
@@ -52,8 +54,14 @@ button{font:inherit;border:1px solid var(--border);background:#fff;padding:6px 1
 <div id="setup" class="card"><div class="t">Not paired</div>
 <div class="m">Open the pairing QR code on the PC (EMRunner\phone\phone_pairing.html) and scan it with the camera.</div></div>
 <div id="view">
-<div class="sec">SOLVERS</div><div class="tiles"><div class="tile" id="tFEM"><h3>FEM</h3><div class="s">EMerge</div><div class="st">not running</div><div class="j"></div></div>
+<div class="sec">SOLVERS</div>
+<div class="rowlab">Laptop (HPZ)</div>
+<div class="tiles"><div class="tile" id="tFEM"><h3>FEM</h3><div class="s">EMerge</div><div class="st">not running</div><div class="j"></div></div>
 <div class="tile" id="tFDTD"><h3>FDTD</h3><div class="s">openEMS</div><div class="st">not running</div><div class="j"></div></div></div>
+<div class="rowlab">hp-solver <span class="dot" id="sdot"></span><span class="m" id="shead"></span></div>
+<div class="tiles"><div class="tile" id="sFEM"><h3>FEM</h3><div class="s">EMerge</div><div class="st">not running</div><div class="j"></div></div>
+<div class="tile" id="sFDTD"><h3>FDTD</h3><div class="s">openEMS</div><div class="st">not running</div><div class="j"></div></div></div>
+<div class="m" id="slast" style="font-size:12px;color:var(--muted);margin-top:4px"></div>
 <div class="sec">SUB-PROJECTS</div><div id="plans"></div>
 <div class="sec">QUEUE</div><div class="card q" id="queue"></div>
 <div class="m" id="last" style="font-size:12px;color:var(--muted)"></div>
@@ -118,6 +126,21 @@ function render(){
     t.querySelector(".j").innerHTML=runs.map(([l,r])=>esc(r.job)+"<br>"+l+" lane · "+hms(now-r.started)+
       (r.over?" · over estimate":r.eta?" · ~"+clock(r.eta):"")).join("<br>");
   }
+  // v2: hp-solver row
+  const SV=d.server;
+  for(const key of ["FEM","FDTD"]){
+    const t=$("s"+key), r=SV&&SV.online&&SV.running&&SV.running.solver===key?SV.running:null;
+    t.classList.toggle("run",!!r);
+    t.querySelector(".st").textContent=r?"● RUNNING":"not running";
+    t.querySelector(".j").innerHTML=r?esc((r.project?r.project+"/":"")+r.name)+"<br>"+hms(now-r.started):"";
+  }
+  if(!SV){$("sdot").style.background="#9a9a9a";$("shead").textContent="not set up";$("slast").textContent="";}
+  else{
+    $("sdot").style.background=SV.online?"var(--ok)":"var(--red)";
+    const nw=(SV.waiting||[]).filter(w=>w.status!=="running").length;
+    $("shead").textContent=(SV.online?"online":"not reporting")+(SV.heartbeat?" · "+clock(SV.heartbeat):"")+(nw?" · "+nw+" waiting":"");
+    const L=SV.last; $("slast").textContent=L?`hp-solver last: ${L.project?L.project+"/":""}${L.name} [${L.solver}] rc=${L.rc} · ${hms(L.seconds)} · ${L.finished}`:"";
+  }
   $("plans").innerHTML=(d.plans||[]).length?(d.plans).map(p=>{
     let eta = p.open===0 ? `<span class="okc">batch finished ${p.finished?clock(p.finished):""}</span>` :
        (p.eta ? `batch finish ~${clock(p.eta)} (in ${hms(p.eta-now)})` : "batch finish: no estimate yet");
@@ -132,6 +155,8 @@ function render(){
       ${p.check_note?`<div class="m">${esc(p.check_note)}</div>`:""}</div>`}).join("")
     :`<div class="m" style="font-size:12px;color:var(--muted)">No active sub-project plan</div>`;
   const rows=[];
+  for(const w of ((d.server&&d.server.waiting)||[]))
+    rows.push(`<div><span>server ${esc((w.project?w.project+"/":"")+w.name)}</span><span>${w.status==="running"?"◀ running":w.status==="to send"?"to send":"waiting"}</span></div>`);
   for(const [lane,q] of Object.entries(d.queue||{})) for(const j of q)
     rows.push(`<div><span>${lane==="light"?"light ":""}${esc(j.name)}${j.skip?" (skip)":""}</span><span>${j.eta?"~"+clock(j.eta):""}</span></div>`);
   $("queue").innerHTML=rows.length?rows.join(""):`<span class="m">Queue empty</span>`;
